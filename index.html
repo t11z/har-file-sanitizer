@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HAR File Sanitizer - Zero Knowledge</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        gray: {
+                            900: '#111827',
+                            800: '#1f2937',
+                            700: '#374151',
+                            100: '#f3f4f6'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen font-sans">
+    <div class="max-w-3xl mx-auto p-6 pt-12">
+        <header class="mb-10 text-center">
+            <h1 class="text-3xl font-bold mb-2">HAR File Sanitizer</h1>
+            <p class="text-gray-400 text-sm">Client-side only. Zero knowledge. Data never leaves your browser.</p>
+        </header>
+
+        <main class="bg-gray-800 rounded-xl shadow-lg p-8">
+            <!-- Dropzone -->
+            <div id="dropzone" class="border-2 border-dashed border-gray-600 rounded-lg p-12 text-center hover:border-blue-500 transition-colors cursor-pointer mb-8 relative">
+                <input type="file" id="fileInput" accept=".har" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                <div id="dropzone-text">
+                    <svg class="w-12 h-12 text-gray-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                    <p class="text-lg font-medium text-gray-300">Drag & Drop your .har file here</p>
+                    <p class="text-sm text-gray-500 mt-2">or click to browse</p>
+                </div>
+            </div>
+
+            <!-- Configuration -->
+            <div class="mb-8">
+                <h2 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Sanitization Options</h2>
+                <div class="space-y-3">
+                    <label class="flex items-center space-x-3 cursor-pointer">
+                        <input type="checkbox" id="opt-headers" checked class="w-5 h-5 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2">
+                        <span class="text-gray-300">Redact Auth & Cookie Headers <span class="text-gray-500 text-sm ml-2">(Authorization, Cookie, Set-Cookie)</span></span>
+                    </label>
+                    <label class="flex items-center space-x-3 cursor-pointer">
+                        <input type="checkbox" id="opt-cookies" checked class="w-5 h-5 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2">
+                        <span class="text-gray-300">Redact Cookie Objects <span class="text-gray-500 text-sm ml-2">(request.cookies, response.cookies)</span></span>
+                    </label>
+                    <label class="flex items-center space-x-3 cursor-pointer">
+                        <input type="checkbox" id="opt-post" checked class="w-5 h-5 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2">
+                        <span class="text-gray-300">Redact POST Data <span class="text-gray-500 text-sm ml-2">(Payloads and forms)</span></span>
+                    </label>
+                    <label class="flex items-center space-x-3 cursor-pointer">
+                        <input type="checkbox" id="opt-query" checked class="w-5 h-5 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2">
+                        <span class="text-gray-300">Redact Sensitive Query Params <span class="text-gray-500 text-sm ml-2">(token, secret, pass, key, session)</span></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Actions & Status -->
+            <div class="flex items-center justify-between">
+                <button id="btn-sanitize" disabled class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-2 px-6 rounded-lg transition-colors">
+                    Sanitize & Download
+                </button>
+                <div id="status" class="text-sm font-mono text-gray-400"></div>
+            </div>
+        </main>
+        
+        <footer class="mt-8 text-center text-sm text-gray-500">
+            Open Source & MIT Licensed. Inspect the source to verify zero-knowledge behavior.
+        </footer>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const dropzone = document.getElementById('dropzone');
+        const dropzoneText = document.getElementById('dropzone-text');
+        const btnSanitize = document.getElementById('btn-sanitize');
+        const statusEl = document.getElementById('status');
+        
+        let currentFile = null;
+        let harData = null;
+
+        // UI Event Listeners
+        fileInput.addEventListener('change', handleFileSelect);
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropzone.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropzone.addEventListener(eventName, () => dropzone.classList.add('border-blue-500', 'bg-gray-750'), false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropzone.addEventListener(eventName, () => dropzone.classList.remove('border-blue-500', 'bg-gray-750'), false);
+        });
+
+        dropzone.addEventListener('drop', (e) => {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            if (files.length) {
+                fileInput.files = files;
+                handleFileSelect({ target: fileInput });
+            }
+        });
+
+        btnSanitize.addEventListener('click', processAndDownload);
+
+        // Core Logic
+        function handleFileSelect(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            if (!file.name.endsWith('.har')) {
+                setStatus('Error: Please select a valid .har file.', 'text-red-400');
+                btnSanitize.disabled = true;
+                return;
+            }
+
+            currentFile = file;
+            dropzoneText.innerHTML = `<div class="text-blue-400 font-medium text-lg">${file.name}</div><div class="text-sm text-gray-400">${(file.size / 1024 / 1024).toFixed(2)} MB</div>`;
+            btnSanitize.disabled = false;
+            setStatus('File loaded. Ready to sanitize.', 'text-green-400');
+        }
+
+        function setStatus(msg, colorClass) {
+            statusEl.className = `text-sm font-mono ${colorClass}`;
+            statusEl.textContent = msg;
+        }
+
+        async function processAndDownload() {
+            if (!currentFile) return;
+
+            setStatus('Reading file...', 'text-blue-400');
+            btnSanitize.disabled = true;
+
+            try {
+                const text = await currentFile.text();
+                setStatus('Parsing JSON...', 'text-blue-400');
+                harData = JSON.parse(text);
+                
+                setStatus('Sanitizing...', 'text-blue-400');
+                
+                const options = {
+                    headers: document.getElementById('opt-headers').checked,
+                    cookies: document.getElementById('opt-cookies').checked,
+                    post: document.getElementById('opt-post').checked,
+                    query: document.getElementById('opt-query').checked,
+                };
+
+                const sanitizedData = sanitizeHar(harData, options);
+
+                setStatus('Preparing download...', 'text-blue-400');
+                downloadJson(sanitizedData, currentFile.name.replace('.har', '_sanitized.har'));
+                
+                setStatus('Success! Download started.', 'text-green-400');
+            } catch (err) {
+                console.error(err);
+                setStatus('Error processing file. Invalid JSON?', 'text-red-400');
+            } finally {
+                btnSanitize.disabled = false;
+            }
+        }
+
+        function sanitizeHar(data, options) {
+            const sensitiveParams = ['password', 'token', 'access_token', 'secret', 'key', 'session', 'auth'];
+            const redactString = '[REDACTED]';
+
+            if (!data.log || !data.log.entries) return data;
+
+            data.log.entries.forEach(entry => {
+                // 1. Headers
+                if (options.headers) {
+                    const scrubHeader = (h) => {
+                        const name = h.name.toLowerCase();
+                        if (name === 'authorization' || name === 'cookie' || name === 'set-cookie' || name === 'proxy-authorization') {
+                            h.value = redactString;
+                        }
+                    };
+                    if (entry.request && entry.request.headers) entry.request.headers.forEach(scrubHeader);
+                    if (entry.response && entry.response.headers) entry.response.headers.forEach(scrubHeader);
+                }
+
+                // 2. Cookies Object
+                if (options.cookies) {
+                    const scrubCookie = (c) => c.value = redactString;
+                    if (entry.request && entry.request.cookies) entry.request.cookies.forEach(scrubCookie);
+                    if (entry.response && entry.response.cookies) entry.response.cookies.forEach(scrubCookie);
+                }
+
+                // 3. Query Strings
+                if (options.query && entry.request && entry.request.queryString) {
+                    entry.request.queryString.forEach(q => {
+                        if (sensitiveParams.some(p => q.name.toLowerCase().includes(p))) {
+                            q.value = redactString;
+                        }
+                    });
+                }
+
+                // 4. POST Data
+                if (options.post && entry.request && entry.request.postData) {
+                    if (entry.request.postData.text) {
+                        entry.request.postData.text = redactString;
+                    }
+                    if (entry.request.postData.params) {
+                        entry.request.postData.params.forEach(p => p.value = redactString);
+                    }
+                }
+            });
+
+            return data;
+        }
+
+        function downloadJson(data, filename) {
+            const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
